@@ -1,0 +1,43 @@
+#version 330 core
+
+in vec2 UV;
+uniform sampler2DArray Texture;
+uniform uint layers;
+
+// Ouput data
+out vec3 colorOut;
+
+const int offset = 2;
+//const uint layers = 300u;
+float getAggCost(uint l)
+{
+	//return texture(Texture, vec3(UV.s, UV.t, l)).a;
+	//return texture(Texture, vec3(UV.s, UV.t, l), offset).a;
+	float cost0 = texture(Texture, vec3(UV.s, UV.t, l), 1).a;
+	float cost1 = texture(Texture, vec3(UV.s, UV.t, l), 2).a;
+	float cost2 = texture(Texture, vec3(UV.s, UV.t, l), 3).a;
+	//return cost0 < cost1 ? (cost0 < cost2 ? cost0 : cost2) : (cost1 < cost2 ? cost1 : cost2);
+	return (cost0 + cost1 + cost2)/3;
+}
+
+void main()
+{
+	colorOut = texture(Texture, vec3(UV.s, UV.t, 0)).rgb;
+	//colorOut = vec3(0,0,0);
+	float min_cost = getAggCost(0u);
+	
+	for(uint l=1u; l<layers; l++)
+	{
+		float cost = getAggCost(l);
+
+		if(cost < min_cost)
+		{
+			min_cost = cost;
+			colorOut = texture(Texture, vec3(UV.s, UV.t, float(l))).rgb;
+			//colorOut = vec3(l,l,l);
+		}
+	}
+
+	//colorOut = vec3(min_cost,min_cost,min_cost);
+	//colorOut /= layers;
+}

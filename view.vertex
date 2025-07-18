@@ -1,0 +1,16 @@
+#version 330 core
+
+layout(location = 0) in ivec2 uvMap;
+
+uniform uint screen_width;
+uniform uint screen_height;
+
+out vec2 UV;
+
+void main()
+{				
+	float u = float(uvMap[0]);
+	float v = float(uvMap[1]);	
+	UV = vec2(u/screen_width, v/screen_height);
+	gl_Position = vec4(2*u/float(screen_width)-1, 1-2*v/float(screen_height), 0, 1);	
+}

@@ -1,0 +1,27 @@
+#version 330 core
+
+layout (triangles) in;
+layout (triangle_strip, max_vertices = 3) out;
+
+in vec2 UV1[];
+in vec2 UV2[];
+
+out vec2 UV1o;
+out vec2 UV2o;
+
+uniform uint layer;
+
+void main()
+{
+	gl_Layer = int(layer);
+ 
+	for(int i = 0; i < gl_in.length(); ++i)
+	{
+		gl_Position = gl_in[i].gl_Position;
+		UV1o = UV1[i];
+		UV2o = UV2[i];
+		EmitVertex();
+	}
+ 
+	EndPrimitive();
+}

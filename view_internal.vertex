@@ -1,0 +1,33 @@
+#version 330 core
+
+layout(location = 0) in ivec2 uvMap;
+
+uniform uint width;
+uniform uint height;
+uniform uint layer;
+uniform uint layers;
+uniform mat4 MVP1;
+uniform mat4 MVP2;
+uniform float minNZ;
+uniform float maxNZ;
+
+out vec2 UV1;
+out vec2 UV2;
+
+void main()
+{				
+	float u = float(uvMap[0]);
+	float v = float(uvMap[1]);	
+	float d = float(layer)/float(layers);
+	float z = 1.f/(d*minNZ + maxNZ); // real Z hypothesis
+	vec4 coords = vec4(u*z, v*z, z, 1);	    
+	vec4 coords1 = MVP1 * coords;
+	vec4 coords2 = MVP2 * coords;	
+	UV1 = coords1.xy / coords1.z;
+	UV2 = coords2.xy / coords2.z;
+	UV1.x /= width; 
+	UV1.y /= height;
+	UV2.x /= width; 
+	UV2.y /= height;
+	gl_Position = vec4(2*u/width-1, 2*v/height-1, 0, 1);	
+}
