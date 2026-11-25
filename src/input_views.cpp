@@ -1,9 +1,7 @@
 #include "input_views.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
-#include <limits>
 
 namespace vi {
 
@@ -54,54 +52,6 @@ InputSet openInputViews(const AppConfig& config) {
     result.views.push_back(std::move(view));
   }
   return result;
-}
-
-std::pair<int, int> selectViewPair(const std::vector<InputView>& views, const glm::vec3& center,
-                                   const glm::vec3& direction, float max_angle_deg, std::pair<int, int> previous) {
-  const int n = int(views.size());
-  if (n == 2) {
-    return {0, 1};
-  }
-
-  const float min_cos = std::cos(glm::radians(max_angle_deg));
-  std::vector<int> candidates;
-  for (int i = 0; i < n; i++) {
-    if (glm::dot(views[i].cam.forward(), direction) >= min_cos) {
-      candidates.push_back(i);
-    }
-  }
-  if (candidates.size() < 2)  // nothing faces the right way: consider all views
-  {
-    candidates.clear();
-    for (int i = 0; i < n; i++) {
-      candidates.push_back(i);
-    }
-  }
-
-  const auto score = [&](int a, int b) {
-    const glm::vec3 ca = views[a].cam.center(), cb = views[b].cam.center();
-    const glm::vec3 ab = cb - ca;
-    const float s = glm::clamp(glm::dot(center - ca, ab) / glm::dot(ab, ab), 0.f, 1.f);
-    return glm::length(center - (ca + s * ab)) + 0.25f * glm::length(ab);
-  };
-
-  std::pair<int, int> best(candidates[0], candidates[1]);
-  float best_score = std::numeric_limits<float>::max();
-  for (size_t i = 0; i < candidates.size(); i++) {
-    for (size_t j = i + 1; j < candidates.size(); j++) {
-      const float s = score(candidates[i], candidates[j]);
-      if (s < best_score) {
-        best_score = s;
-        best = {candidates[i], candidates[j]};
-      }
-    }
-  }
-
-  // hysteresis against flickering between two similar pairs
-  if (previous.first >= 0 && previous != best && score(previous.first, previous.second) <= best_score * 1.05f) {
-    return previous;
-  }
-  return best;
 }
 
 }  // namespace vi

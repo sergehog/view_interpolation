@@ -16,6 +16,7 @@
 #include "fly_camera.h"
 #include "input_views.h"
 #include "plane_sweep_renderer.h"
+#include "view_selection.h"
 
 namespace {
 
@@ -106,6 +107,12 @@ int run(const Options& opt) {
 
   InputSet inputs = openInputViews(config);
   std::vector<InputView>& views = inputs.views;
+  // typical scene depth for view selection: the middle of the depth range in inverse depth
+  const float scene_depth = 2.f / (1.f / config.min_z + 1.f / config.max_z);
+  std::vector<Camera> cameras;
+  for (const InputView& v : views) {
+    cameras.push_back(v.cam);
+  }
   if (snapshot && inputs.loop_length > 1) {
     for (long f = 0; f < opt.snapshot_frame % inputs.loop_length; f++) {
       for (InputView& v : views) {
@@ -118,7 +125,7 @@ int run(const Options& opt) {
   int fb_width, fb_height;
   window.framebufferSize(fb_width, fb_height);
   PlaneSweepRenderer renderer(config, fb_width, fb_height);
-  FlyCamera navigation;
+  FlyCamera navigation(window.get(), !snapshot);
 
   // playback: input frames advance at inputs.fps, independently of the rendering rate
   const double frame_period = 1.0 / inputs.fps;
@@ -152,7 +159,8 @@ int run(const Options& opt) {
 
     const glm::vec3 center(c_inv * glm::vec4(0, 0, 0, 1));
     const glm::vec3 direction = glm::normalize(glm::vec3(c_inv * principal_ray));
-    const std::pair<int, int> best = selectViewPair(views, center, direction, config.max_view_angle, pair);
+    const std::pair<int, int> best =
+        selectViewPair(cameras, center, direction, scene_depth, config.max_view_angle, pair);
     if (best != pair) {
       pair = best;
       printf("Using views %s + %s\n", views[pair.first].cam.name.c_str(), views[pair.second].cam.name.c_str());

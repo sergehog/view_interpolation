@@ -32,6 +32,7 @@ add_library(vi_input STATIC
     src/config.cpp
     src/frame_source.cpp
     src/input_views.cpp
+    src/view_selection.cpp
 )
 target_include_directories(vi_input PUBLIC src)
 target_link_libraries(vi_input PUBLIC Boost::headers glm::glm Threads::Threads PkgConfig::FFMPEG)
@@ -53,4 +54,17 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE -Wall -Wextra)
     endforeach()
     target_compile_options(lodepng PRIVATE -w) # third-party code, not ours to fix
+endif()
+
+# unit tests (GoogleTest): ctest --test-dir build-release
+find_package(GTest)
+if(GTest_FOUND)
+    enable_testing()
+    include(GoogleTest)
+    add_executable(unit_tests tests/view_selection_test.cpp)
+    target_link_libraries(unit_tests PRIVATE vi_input GTest::gtest_main)
+    target_compile_definitions(unit_tests PRIVATE VI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    gtest_discover_tests(unit_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+else()
+    message(STATUS "GoogleTest not found: unit tests are not built")
 endif()

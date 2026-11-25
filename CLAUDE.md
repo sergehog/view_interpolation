@@ -23,7 +23,7 @@ cmake --build build-release
 - `./demo_video1.sh [config] [dataset-dir]` runs the CMU Panoptic video demo. It links the dataset to `data/171204_pose1_sample` and runs `configs/panoptic_pose1.config` (8 views) by default, or `configs/panoptic_pose1_2views.config`.
 - **Always run from the repo root.** Shader paths (default `shaders/…`) and data paths in configs are relative to the current working directory.
 - The program opens a normal, non-resizable window of `output_width`×`output_height` (default: the processing resolution). Press **Esc** to quit. Stdout shows the FPS, the current video frame and the view pair in use.
-- Controls (`FlyCamera`, `src/fly_camera.cpp`): **hold the left mouse button and drag** to look around, W/A/S/D or the arrow keys to move, Space to move up, right mouse button to move down. The cursor is captured only during a drag, because Wayland doesn't allow warping the cursor. Movement is in world units per second times `speed` (Georgiev is in metres, Panoptic in cm).
+- Controls (`FlyCamera`, `src/fly_camera.cpp`): the mouse is **captured at startup** and turns the view directly, using raw motion where supported and pointer lock on Wayland. **Tab** releases or recaptures it, and a click into the window recaptures it. W/A/S/D or the arrow keys move, Space moves up and the right mouse button moves down. Movement is in world units per second times `speed` (Georgiev is in metres, Panoptic in cm). Snapshot mode does not capture the mouse.
 - **Code style (Google-like):**
   - Naming: `CamelCase` types, `lowerCamelCase()` functions and methods, `snake_case` variables and struct members, a trailing underscore for private class members (`width_`) and `kConstantName` constants. Namespace `vi`.
   - Formatting: `.clang-format` (Google base, 120 columns, include order: own header, std, libraries, project). Apply it with `clang-format -i src/*.{h,cpp} tools/*.cpp` and leave `third_party/` untouched.
@@ -31,7 +31,9 @@ cmake --build build-release
 
 ## Testing
 
-There are no unit tests and no CI. Use the **regression suite `tools/eval.sh [geo_par geo_rot temple pan2]`**: it renders held-out camera views headless and prints the PSNR against the real images of those cameras. Run it before and after any change to shaders, camera maths or input decoding. Reference numbers are in the script header (currently 34.88 / 28.77 / 12.72 / 17.85 dB); a pure refactor must reproduce them exactly. When renaming with scripts, also compare string literals: GL looks up uniforms by name, so a renamed `"layers"` compiles fine but silently breaks rendering.
+**Unit tests** (GoogleTest, `tests/`): `cmake --build build-release && ctest --test-dir build-release`, or run `build-release/unit_tests` directly. They cover `selectViewPair` on synthetic rigs (linear, ring, random property test) and on the real Georgiev and Panoptic calibrations; the Panoptic tests are skipped when `data/171204_pose1_sample` is not linked. There is no CI.
+
+For rendering, use the **regression suite `tools/eval.sh [geo_par geo_rot temple pan2]`**: it renders held-out camera views headless and prints the PSNR against the real images of those cameras. Run it before and after any change to shaders, camera maths or input decoding. Reference numbers are in the script header (currently 34.88 / 28.77 / 12.72 / 17.85 dB); a pure refactor must reproduce them exactly. When renaming with scripts, also compare string literals: GL looks up uniforms by name, so a renamed `"layers"` compiles fine but silently breaks rendering.
 - **Requirements:** `xvfb-run`, python3 with numpy and Pillow, the stereo datasets in `$STEREO_DATA` (default `~/git/stereo/data`) and the Panoptic link in `data/`. Output goes to `eval-out/`.
 - **Test cases:**
   - Georgiev 21+23 → 22. The ground truth is the original render `ScenePlane/Color22.png`.
@@ -54,7 +56,8 @@ There are no unit tests and no CI. Use the **regression suite `tools/eval.sh [ge
   - `FfmpegDecoder` handles videos, images and image sequences like `%04d.png`, and scales them to the processing resolution. `*.yuv` files are read with the `rawvideo` demuxer as YUV420 at exactly the processing resolution.
   - `UndistortMap`: precomputed OpenCV-model (k1,k2,p1,p2,k3) undistortion with bilinear sampling.
   - `BufferedSource`: one decoder plus undistortion in its own thread, with a bounded queue. A single-frame source is decoded once and gets no thread.
-- `src/input_views.{h,cpp}`: `openInputViews()` opens all views, scaling each camera to the processing resolution. All decoders first agree on one loop length (the shortest video, or `<frames>`), which keeps the streams frame-synchronous. `selectViewPair()` is described in the main loop below.
+- `src/input_views.{h,cpp}`: `openInputViews()` opens all views, scaling each camera to the processing resolution. All decoders first agree on one loop length (the shortest video, or `<frames>`), which keeps the streams frame-synchronous.
+- `src/view_selection.{h,cpp}`: `selectViewPair()`, described in the frame steps below. It works on plain `Camera`s, so it is unit-testable.
 - `src/fly_camera.{h,cpp}`: `FlyCamera::update()` turns mouse and keyboard input into a view matrix, which is the identity until the user moves.
 - `src/gl_program.{h,cpp}`: `loadProgram(vertex, geometry, fragment)`. The geometry shader is optional. Compiler warnings are printed; errors throw.
 - `src/plane_sweep_renderer.{h,cpp}`: `PlaneSweepRenderer` owns all GL objects (programs, quads, input textures, layer array, FBO) and runs both passes. `uploadInput()`, `render(mvp1, mvp2)` and `readBackBuffer()`.
@@ -65,7 +68,11 @@ There are no unit tests and no CI. Use the **regression suite `tools/eval.sh [ge
 
 1. **Video clock:** when `1/fps` has passed, call `advance()` on every source, so all views stay on the same frame index. Rendering runs at vsync, independently of the video rate. If decoding falls behind, playback slows down rather than skipping frames.
 2. **Camera maths:** `C_inv = inverse(E) * V * inverse(K4)` maps `(u*z, v*z, z, 1)` of the moved virtual camera to world coordinates. `CV = K4 * E` is the virtual camera and `V` is the fly-camera matrix. **The motion is applied in the virtual camera's own frame;** applying it in world coordinates was only correct when the virtual camera was the world origin, as in Georgiev.
-3. **View selection (`selectViewPair`)**: among views facing within `max_view_angle` of the virtual camera, pick the pair whose connecting segment passes closest to the virtual camera centre, plus a 0.25×baseline penalty. A 5% hysteresis prevents flicker between similar pairs. With 2 views, both are always used.
+3. **View selection (`selectViewPair`)**: works in *viewing directions onto the scene*, seen from the point the virtual camera looks at. That point is at `scene_depth` = the middle of [minZ, maxZ] in inverse depth.
+   - Only views facing within `max_view_angle` of the virtual camera are considered.
+   - A pair qualifies when the virtual direction lies **between** the two cameras' directions, i.e. its projection onto their chord falls between them. So the view is interpolated, never extrapolated while a qualifying pair exists.
+   - Among qualifying pairs, the smallest deviation plus 0.25 × the pair's angular spread wins. A 5% hysteresis keeps the previous pair while it still qualifies. With exactly 2 views, both are always used.
+   - Why directions and not positions: on converging rigs (Panoptic dome) a virtual camera off the camera circle is still correctly served by the cameras around its viewing direction. Moving straight towards the scene doesn't change the pair. The old segment-distance score happily picked two cameras on one side.
 4. **Upload:** the selected pair's frames are uploaded only when the view or its frame changed. Then `MVP_i = P_i * C_inv`.
 5. **Sweep pass:** one quad per depth layer goes into a layered FBO (a `GL_TEXTURE_2D_ARRAY` with `layers` slices at framebuffer size).
    - `sweep.vert`: depth hypotheses are uniform in inverse depth, from `maxZ` (layer 0) to `minZ` (last layer). It back-projects each pixel and projects it into both inputs, outputting **homogeneous** texture coordinates.
@@ -92,7 +99,7 @@ Configs live in `configs/` and are XML: `<config><input>…</input><settings>…
 - Settings: `desired_camera_file`, `output_width`, `output_height`, `param1` (cost threshold), `param2`, `speed`, `mouseSpeed`, `max_view_angle` (default 60°), `buffer_frames` (default 4) and the shader paths. Unknown keys are ignored.
 
 **Datasets:**
-- `configs/georgiev.config`: still YUV frames from `Georgiev/`, which are limited-range BT.601 versions of `ScenePlane/ColorXX.png`. It interpolates `Camera22` from `Camera21` and `Camera23` (640×480, Z range 1–7 m, horizontal baseline 4 cm).
+- `configs/georgiev.config`: multi-view stills from `Georgiev/`, limited-range BT.601 versions of `ScenePlane/ColorXX.png`. Inputs are Camera20, 21, 23 and 24 of a horizontal row 4 cm apart; `Camera22` (the middle one) is held out as the initial virtual view, and `Color22.yuv` is its ground truth. It is 640×480 with a Z range of 1–7 m. Flying sideways switches between neighbouring pairs.
 - `configs/panoptic_pose1*.config`: CMU Panoptic `171204_pose1_sample` HD videos (1920×1080 → 960×540, 29.97 fps, 101 frames, units in cm, strong lens distortion). HD camera `00_22` is held out as the virtual view. The HD cameras are sparse, about 125 cm (~25°) apart.
 - `data/` holds dataset symlinks and is git-ignored.
 

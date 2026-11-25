@@ -12,7 +12,7 @@ out vec3 color;
 float aggregated_cost(uint layer)
 {
     vec3 p = vec3(uv, float(layer));
-    return (texture(Texture, p, 1).a + texture(Texture, p, 2).a + texture(Texture, p, 3).a) / 3;
+    return (texture(Texture, p, 1).a + texture(Texture, p, 2).a + texture(Texture, p, 3).a)/3;
 }
 
 void main()

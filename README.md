@@ -25,7 +25,7 @@ From the repo root:
 ./build-release/view_interpolation configs/<name>.config [--snapshot out.png [--frame N]]
 ```
 
-Hold the left mouse button and drag to look around. W/A/S/D or the arrow keys move, Space and the
-right mouse button move up and down, and Esc quits.
+The mouse is captured at startup and turns the view; Tab releases or recaptures it. W/A/S/D or the arrow
+keys move, Space and the right mouse button move up and down, and Esc quits.
 
 See `CLAUDE.md` for the architecture, the config format and the evaluation suite (`tools/eval.sh`).
