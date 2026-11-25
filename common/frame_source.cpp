@@ -1,9 +1,9 @@
 #include "frame_source.h"
-#include "yuv_reader.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 #include <libswscale/swscale.h>
 }
 
@@ -32,61 +32,13 @@ namespace vi
 			                  [](char a, char b) { return std::tolower(a) == std::tolower(b); });
 		}
 
-		//! Raw planar YUV 4:2:0 file, no scaling (file resolution must equal the processing resolution).
-		class yuv_decoder : public frame_decoder
-		{
-		public:
-			yuv_decoder(const std::string &file, int w, int h)
-				: reader(file, w, h, true, true, 0), width(w), height(h)
-			{
-				if (reader.is_bad())
-				{
-					throw std::runtime_error("Cannot read YUV file " + file);
-				}
-				std::ifstream f(file, std::ios::binary | std::ios::ate);
-				count = long(f.tellg() / (std::streamoff(w) * h * 3 / 2));
-				if (count < 1)
-				{
-					throw std::runtime_error("YUV file " + file + " is smaller than one frame");
-				}
-			}
-
-			bool decode_next(uint8_t *dst) override
-			{
-				if (index >= count || !reader.read_frame()) return false;
-				index++;
-				// raw_frame::yuv2rgb stores the planes in B, G, R order
-				const uint8_t *planes = reader.frame->frame;
-				const long HW = long(width) * height;
-				for (long i = 0; i < HW; i++)
-				{
-					dst[i * 3] = planes[i];
-					dst[i * 3 + 1] = planes[i + HW];
-					dst[i * 3 + 2] = planes[i + HW * 2];
-				}
-				return true;
-			}
-
-			void rewind() override
-			{
-				reader.set_frame(0);
-				index = 0;
-			}
-
-			long frame_count() const override { return count; }
-			double fps() const override { return 0; }
-
-		private:
-			t3dtv::yuv_reader reader;
-			const int width, height;
-			long count = 0, index = 0;
-		};
-
-		//! Anything libavformat can open: video files, single images, image sequences.
+		//! Anything libavformat can open: video files, single images, image sequences, and raw
+		//! planar YUV 4:2:0 files (*.yuv, read with the rawvideo demuxer at the processing resolution).
 		class ffmpeg_decoder : public frame_decoder
 		{
 		public:
-			ffmpeg_decoder(const std::string &file, int w, int h) : width(w), height(h), filename(file)
+			ffmpeg_decoder(const std::string &file, int w, int h, bool raw_yuv)
+				: width(w), height(h), filename(file), raw(raw_yuv)
 			{
 				try
 				{
@@ -147,7 +99,19 @@ namespace vi
 		private:
 			void open()
 			{
-				int r = avformat_open_input(&fmt, filename.c_str(), nullptr, nullptr);
+				const AVInputFormat *input_format = nullptr;
+				AVDictionary *options = nullptr;
+				if (raw)
+				{
+					// Headerless YUV: limited-range BT.601 like other YUV sources (verified on the Georgiev data
+					// against the original renders: 39.9 dB, vs 26.5 dB for the old full-range raw_frame::yuv2rgb).
+					input_format = av_find_input_format("rawvideo");
+					const std::string size = std::to_string(width) + "x" + std::to_string(height);
+					av_dict_set(&options, "video_size", size.c_str(), 0);
+					av_dict_set(&options, "pixel_format", "yuv420p", 0);
+				}
+				int r = avformat_open_input(&fmt, filename.c_str(), input_format, &options);
+				av_dict_free(&options);
 				if (r < 0) fail("cannot open", r);
 				r = avformat_find_stream_info(fmt, nullptr);
 				if (r < 0) fail("cannot read stream info", r);
@@ -204,6 +168,7 @@ namespace vi
 
 			const int width, height;
 			const std::string filename;
+			const bool raw;
 			AVFormatContext *fmt = nullptr;
 			AVCodecContext *dec = nullptr;
 			AVFrame *frame = nullptr;
@@ -219,11 +184,7 @@ namespace vi
 
 	std::unique_ptr<frame_decoder> open_decoder(const std::string &file, int width, int height)
 	{
-		if (ends_with(file, ".yuv"))
-		{
-			return std::make_unique<yuv_decoder>(file, width, height);
-		}
-		return std::make_unique<ffmpeg_decoder>(file, width, height);
+		return std::make_unique<ffmpeg_decoder>(file, width, height, ends_with(file, ".yuv"));
 	}
 
 	//////////////////////////////////////////////////////////////////////////

@@ -5,3 +5,4 @@ build-*/
 x64
 data/
 /view_interpolation
+eval-out/

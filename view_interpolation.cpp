@@ -10,6 +10,7 @@
 #include "common/camera_loader.h"
 #include "common/frame_source.h"
 #include "common/controls.hpp"
+#include "lodepng.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -18,7 +19,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 
@@ -53,11 +56,22 @@ std::pair<int, int> select_views(const std::vector<input_view> &views, const vec
 
 int main(int argc, char* argv[])
 {
+	// command line: config-file.xml [--snapshot out.png [--frame N]]
+	// --snapshot renders the initial virtual view (of input frame N, default 0), saves it as PNG and exits.
+	std::string snapshot_file;
+	long snapshot_frame = 0;
+	for (int i = 2; i < argc; i++)
+	{
+		if (!strcmp(argv[i], "--snapshot") && i + 1 < argc) snapshot_file = argv[++i];
+		else if (!strcmp(argv[i], "--frame") && i + 1 < argc) snapshot_frame = std::stol(argv[++i]);
+		else argc = 0; // unknown argument: print usage
+	}
 	if (argc < 2)
 	{
-		std::cout << "CORRECT USAGE: " << argv[0] << " config-file.xml" << std::endl;
+		std::cout << "USAGE: view_interpolation config-file.xml [--snapshot out.png [--frame N]]" << std::endl;
 		return 1;
 	}
+	const bool snapshot = !snapshot_file.empty();
 
 	try
 	{
@@ -65,7 +79,10 @@ int main(int argc, char* argv[])
 		const static config::vi_config config = config::vi_config::load_config(argv[1]);
 		const config::camera_params output_camera = config::camera_loader::read_settings(config.desired_camera_file, config.desired_camera_name)
 			.scaled_to(int(config.width), int(config.height));
-		const mat4 CV = output_camera.projection();
+		// virtual camera projection CV = K4 * E; the free-fly motion is applied between the two, i.e. in the virtual camera's own frame
+		const mat4 K4inv = glm::inverse(mat4(output_camera.K));
+		const mat4 Einv = glm::inverse(mat4(output_camera.extrinsics()));
+		const vec4 principal_ray(output_camera.K[2][0], output_camera.K[2][1], 1, 0); // (cx, cy, 1) at infinity
 
 		// Initialise GLFW	
 		if (!glfwInit())
@@ -82,6 +99,13 @@ int main(int argc, char* argv[])
 		long loop_length = 0;
 		double fps = 0;
 		std::vector<input_view> views = open_views(config, loop_length, fps);
+		if (snapshot)
+		{
+			for (long f = 0; loop_length > 1 && f < snapshot_frame % loop_length; f++)
+			{
+				for (input_view &v : views) v.source->advance();
+			}
+		}
 
 		GLFWwindow* window = glfwCreateWindow(config.output_width, config.output_height, "View-plus-depth OpenGL rendering demo", NULL, NULL); // windowed
 
@@ -116,7 +140,6 @@ int main(int argc, char* argv[])
 		glClearColor(0.0f, 0.0f, 0.2f, 0.0f);
 
 		// Enable depth test
-		glEnable(GL_DEPTH);
 		glEnable(GL_DEPTH_TEST);
 
 		// Accept fragment if it closer to the camera than the former one
@@ -147,12 +170,13 @@ int main(int argc, char* argv[])
 		const GLuint LayerID = glGetUniformLocation(internal_programID, "layer");
 		setup_program(internal_programID, config, screen_width, screen_height);
 
-		glGetError();
 
 
 		GLuint uvbuffer_internal, uvbuffer_main;
-		const GLint uv_buffer_int[] = { 0, 0, config.width, 0, 0, config.height,
-			config.width, 0, config.width, config.height, 0, config.height };
+		// Internal pass: two triangles covering the input image. This is exact for any camera
+		// geometry because the shaders interpolate homogeneous coordinates and divide per fragment.
+		const GLint uv_buffer_int[] = { 0, 0, GLint(config.width), 0, 0, GLint(config.height),
+			GLint(config.width), 0, GLint(config.width), GLint(config.height), 0, GLint(config.height) };
 		const GLint uv_buffer_main[] = { 0, 0, screen_width, 0, 0, screen_height,
 			screen_width, 0, screen_width, screen_height, 0, screen_height };
 		glGenBuffers(1, &uvbuffer_internal);
@@ -177,7 +201,9 @@ int main(int argc, char* argv[])
 		// "Bind" the newly created texture : all future texture functions will modify this texture
 		glBindTexture(GL_TEXTURE_2D_ARRAY, renderedTexture);
 		
-		glTexStorage3D(GL_TEXTURE_2D_ARRAY, 10, GL_RGBA8, screen_width, screen_height, config.layers);
+		// full mip chain: the display pass aggregates costs by sampling mip levels 1-3
+		const GLsizei mip_levels = GLsizei(std::floor(std::log2(double(std::max(screen_width, screen_height))))) + 1;
+		glTexStorage3D(GL_TEXTURE_2D_ARRAY, mip_levels, GL_RGBA8, screen_width, screen_height, config.layers);
 
 		// Give an empty image to OpenGL ( the last "0" means "empty" )
 		//glTexImage2D(GL_TEXTURE_2D_ARRAY, 0, GL_RGB, config.width, config.height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
@@ -242,6 +268,8 @@ int main(int argc, char* argv[])
 		float curr_fps = 0;
 		double lastTime = glfwGetTime();
 		unsigned nbFrames = 0;
+		unsigned rendered_frames = 0;
+		unsigned long total_frames = 0;
 
 		// video clock: input frames advance at `fps`, independently of the rendering rate
 		const double frame_period = 1.0 / fps;
@@ -273,7 +301,7 @@ int main(int argc, char* argv[])
 				lastTime = currentTime;
 			}
 
-			if (loop_length > 1 && currentTime >= next_frame_time)
+			if (!snapshot && loop_length > 1 && currentTime >= next_frame_time)
 			{
 				for (input_view &v : views)
 				{
@@ -296,12 +324,13 @@ int main(int argc, char* argv[])
 			glUseProgram(internal_programID);
 
 			const mat4 ViewMatrix = computeViewMatrix(config.speed, config.mouseSpeed, window);
-			//const mat4 Cinv = glm::inverse(ViewMatrix*CV);
-			const mat4 Cinv = ViewMatrix*glm::inverse(CV);
+			// (u*z, v*z, z, 1) of the moved virtual camera -> world. Moving in world coordinates
+			// (ViewMatrix * inverse(CV)) is only right when the virtual camera frame is the world frame.
+			const mat4 Cinv = Einv * ViewMatrix * K4inv;
 
 			// pick the pair of input views that best brackets the (moved) virtual camera
 			const vec3 virtual_center = vec3(Cinv * vec4(0, 0, 0, 1));
-			const vec3 virtual_direction = glm::normalize(mat3(ViewMatrix) * output_camera.forward());
+			const vec3 virtual_direction = glm::normalize(vec3(Cinv * principal_ray));
 			const std::pair<int, int> new_pair = select_views(views, virtual_center, virtual_direction, config.max_view_angle, pair);
 			if (new_pair != pair)
 			{
@@ -368,6 +397,30 @@ int main(int argc, char* argv[])
 			glDrawArrays(GL_TRIANGLES, 0, 6);
 
 			glDisableVertexAttribArray(0);
+
+			if (++total_frames == 1) // report OpenGL errors of the setup and the first frame once
+			{
+				for (GLenum err = glGetError(); err != GL_NO_ERROR; err = glGetError())
+				{
+					printf("OpenGL error 0x%04x\n", err);
+				}
+			}
+
+			if (snapshot && ++rendered_frames >= 3) // a few warm-up frames, then save the back buffer and quit
+			{
+				std::vector<unsigned char> pixels(size_t(screen_width) * screen_height * 3), flipped(pixels.size());
+				glReadBuffer(GL_BACK);
+				glPixelStorei(GL_PACK_ALIGNMENT, 1);
+				glReadPixels(0, 0, screen_width, screen_height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+				const size_t row = size_t(screen_width) * 3;
+				for (int y = 0; y < screen_height; y++)
+				{
+					memcpy(&flipped[y * row], &pixels[(screen_height - 1 - y) * row], row);
+				}
+				const unsigned err = lodepng::encode(snapshot_file, flipped, screen_width, screen_height, LCT_RGB);
+				printf(err ? "Cannot write snapshot %s\n" : "Snapshot saved to %s\n", snapshot_file.c_str());
+				break;
+			}
 
 			// Swap buffers
 			glfwSwapBuffers(window);
@@ -533,7 +586,10 @@ std::vector<input_view> open_views(const config::vi_config &config, long &loop_l
 	{
 		fps = 25;
 	}
-	printf("Playing %ld frame(s) in a loop at %.2f fps\n", loop_length, fps);
+	if (loop_length > 1)
+		printf("Playing %ld frames in a loop at %.2f fps\n", loop_length, fps);
+	else
+		printf("All inputs are still images\n");
 
 	std::vector<input_view> views;
 	for (size_t i = 0; i < config.views.size(); i++)

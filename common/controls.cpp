@@ -3,6 +3,7 @@
 // Include GLM
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/constants.hpp>
 
 using namespace glm;
 
@@ -17,7 +18,7 @@ mat4 computeViewMatrix(const float speed, const float mouseSpeed, GLFWwindow *wi
 	// Initial position : on +Z
 	static glm::vec3 position = glm::vec3(0, 0, 0);
 	// Initial horizontal angle : toward -Z
-	static float horizontalAngle = 3.14f;
+	static float horizontalAngle = glm::pi<float>();
 	// Initial vertical angle : none
 	static float verticalAngle = 0.0f;
 
@@ -63,9 +64,9 @@ mat4 computeViewMatrix(const float speed, const float mouseSpeed, GLFWwindow *wi
 	
 	// Right vector
 	glm::vec3 right = glm::vec3(
-		sin(horizontalAngle - 3.14f/2.0f), 
+		sin(horizontalAngle - glm::half_pi<float>()), 
 		0,
-		cos(horizontalAngle - 3.14f/2.0f)
+		cos(horizontalAngle - glm::half_pi<float>())
 	);
 	
 	//// Up vector

@@ -2,7 +2,7 @@
  *
  * All frames handed to the renderer are BGR24, interleaved, top row first, width x height of the
  * processing resolution. BGR because the shaders sample the input textures with a `.bgr` swizzle
- * (the original YUV->RGB code in raw_frame.h emits B,G,R planes).
+ * (historically raw_frame::yuv2rgb emitted B,G,R planes).
  */
 #pragma once
 
@@ -35,8 +35,8 @@ namespace vi
 		virtual double fps() const = 0;
 	};
 
-	//! Opens a decoder by file extension: *.yuv -> raw planar YUV420 (must already be width x height),
-	//! anything else -> FFmpeg (videos, image files, image sequences like "img_%04d.png"), scaled to width x height.
+	//! Opens a decoder (FFmpeg). *.yuv files are raw planar YUV420 of exactly width x height;
+	//! anything else (videos, image files, image sequences like "img_%04d.png") is scaled to width x height.
 	std::unique_ptr<frame_decoder> open_decoder(const std::string &file, int width, int height);
 
 	//! Precomputed inverse lens-distortion lookup (OpenCV model), bilinear resampling.

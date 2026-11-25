@@ -11,23 +11,24 @@ uniform mat4 MVP2;
 uniform float minNZ;
 uniform float maxNZ;
 
-out vec2 UV1;
-out vec2 UV2;
+// Homogeneous texture coordinates in the input views (divide .xy by .z in the fragment shader).
+// For a fixed depth they are linear in (u,v), so the rasterizer interpolates them exactly;
+// dividing per vertex instead would be exact only at the vertices (wrong for rotated cameras).
+out vec3 UV1h;
+out vec3 UV2h;
 
 void main()
-{				
+{
 	float u = float(uvMap[0]);
-	float v = float(uvMap[1]);	
-	float d = float(layer)/float(layers);
+	float v = float(uvMap[1]);
+	float d = float(layer)/float(max(layers, 2u) - 1u); // 0 -> maxZ ... 1 -> minZ (inclusive)
 	float z = 1.f/(d*minNZ + maxNZ); // real Z hypothesis
-	vec4 coords = vec4(u*z, v*z, z, 1);	    
+	// (u,v) are continuous raster coordinates (pixel x spans [x, x+1]), while camera matrices use
+	// pixel-centre coordinates (pixel x is centred at x): shift by half a pixel both ways.
+	vec4 coords = vec4((u - 0.5f)*z, (v - 0.5f)*z, z, 1);
 	vec4 coords1 = MVP1 * coords;
-	vec4 coords2 = MVP2 * coords;	
-	UV1 = coords1.xy / coords1.z;
-	UV2 = coords2.xy / coords2.z;
-	UV1.x /= width; 
-	UV1.y /= height;
-	UV2.x /= width; 
-	UV2.y /= height;
-	gl_Position = vec4(2*u/width-1, 2*v/height-1, 0, 1);	
+	vec4 coords2 = MVP2 * coords;
+	UV1h = vec3((coords1.x + 0.5f*coords1.z) / float(width), (coords1.y + 0.5f*coords1.z) / float(height), coords1.z);
+	UV2h = vec3((coords2.x + 0.5f*coords2.z) / float(width), (coords2.y + 0.5f*coords2.z) / float(height), coords2.z);
+	gl_Position = vec4(2*u/width-1, 2*v/height-1, 0, 1);
 }

@@ -35,3 +35,8 @@ target_link_libraries(view_interpolation
     Threads::Threads
     PkgConfig::FFMPEG
     )
+
+# Test helper (tools/eval.sh): undistorted ground-truth frame of a video as PNG
+add_executable(gtframe tools/gtframe.cpp common/frame_source.cpp lodepng.cpp)
+target_include_directories(gtframe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(gtframe PRIVATE Boost::headers Threads::Threads PkgConfig::FFMPEG OpenMP::OpenMP_CXX)
