@@ -126,7 +126,8 @@ public:
 	
 	void set_frame(int frame)
 	{
-		stream.seekg(frame*(frame420->framesize));
+		stream.clear(); // reset eof/fail flags, otherwise seeking after the last frame is ignored
+		stream.seekg(std::streamoff(frame) * frame420->framesize);
 	}
 
 	~yuv_reader()

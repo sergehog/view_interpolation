@@ -28,18 +28,31 @@ mat4 computeViewMatrix(const float speed, const float mouseSpeed, GLFWwindow *wi
 	double currentTime = glfwGetTime();
 	float deltaTime = float(currentTime - lastTime);
 
-	// Get mouse position
-	int screen_width, screen_height;
-	glfwGetWindowSize(window, &screen_width, &screen_height);
+	// Mouse look while the left button is held (drag-to-look). The cursor is captured during the drag,
+	// which also works on Wayland, where warping the cursor (the old re-centring approach) is not allowed.
+	static bool dragging = false;
+	static double lastX = 0, lastY = 0;
 	double xpos, ypos;
 	glfwGetCursorPos(window, &xpos, &ypos);
-		
-	// Reset mouse position for next frame
-	glfwSetCursorPos(window, screen_width/2.0, screen_height/2.0);
-
-	// Compute new orientation
-	horizontalAngle += mouseSpeed * (screen_width/2.f - float(xpos));
-	verticalAngle -= mouseSpeed * (screen_height / 2.f - float(ypos));
+	const bool pressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+	if (pressed && !dragging)
+	{
+		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+		glfwGetCursorPos(window, &xpos, &ypos);
+		dragging = true;
+	}
+	else if (!pressed && dragging)
+	{
+		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		dragging = false;
+	}
+	if (dragging)
+	{
+		horizontalAngle += mouseSpeed * float(lastX - xpos);
+		verticalAngle -= mouseSpeed * float(lastY - ypos);
+	}
+	lastX = xpos;
+	lastY = ypos;
 
 	// Direction : Spherical coordinates to Cartesian coordinates conversion
 	glm::vec3 direction(

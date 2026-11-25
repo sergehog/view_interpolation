@@ -8,14 +8,18 @@
 #include <GL/glew.h>
 #include "vi_config.h"
 #include "common/camera_loader.h"
-#include "common/yuv_reader.h"
+#include "common/frame_source.h"
 #include "common/controls.hpp"
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <memory>
+#include <vector>
 
 
 using namespace glm;
@@ -23,7 +27,18 @@ using namespace glm;
 
 unsigned prepare_buffers(config::vi_config config, GLuint &uvbuffer, GLuint &elementbuffer);
 void setup_program(GLuint programID, config::vi_config config, int screen_width, int screen_height);
-void read_rgb_frame(t3dtv::yuv_reader &color_reader, config::vi_config config, GLubyte *rgb_buffer);
+
+//! One input view: calibrated camera (intrinsics scaled to the processing resolution) and its frame source.
+struct input_view
+{
+	config::camera_params camera;
+	mat4 projection;
+	std::unique_ptr<vi::buffered_source> source;
+};
+
+std::vector<input_view> open_views(const config::vi_config &config, long &loop_length, double &fps);
+std::pair<int, int> select_views(const std::vector<input_view> &views, const vec3 &center, const vec3 &direction,
+                                 float max_angle_deg, std::pair<int, int> previous);
 
 // void checkGLError(char* name)
 // {
@@ -48,13 +63,9 @@ int main(int argc, char* argv[])
 	{
 
 		const static config::vi_config config = config::vi_config::load_config(argv[1]);
-		const std::pair<const mat3, const mat4x3> input_camera1 = config::camera_loader::read_settings(config.camera_file, config.camera1_name);
-		const std::pair<const mat3, const mat4x3> input_camera2 = config::camera_loader::read_settings(config.camera_file, config.camera2_name);
-		const std::pair<const mat3, const mat4x3> output_camera = config::camera_loader::read_settings(config.desired_camera_file, config.desired_camera_name);
-
-		const mat4 C1 = mat4(input_camera1.first * input_camera1.second);
-		const mat4 C2 = mat4(input_camera2.first * input_camera2.second);
-		const mat4 CV = mat4(output_camera.first * output_camera.second);
+		const config::camera_params output_camera = config::camera_loader::read_settings(config.desired_camera_file, config.desired_camera_name)
+			.scaled_to(int(config.width), int(config.height));
+		const mat4 CV = output_camera.projection();
 
 		// Initialise GLFW	
 		if (!glfwInit())
@@ -68,18 +79,11 @@ int main(int argc, char* argv[])
 		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 		glfwWindowHint(GLFW_SAMPLES, 0);
 		
-		t3dtv::yuv_reader color1_reader(config.color1_file.c_str(), int(config.width), int(config.height), true, true, 0);
-		t3dtv::yuv_reader color2_reader(config.color2_file.c_str(), int(config.width), int(config.height), true, true, 0);
+		long loop_length = 0;
+		double fps = 0;
+		std::vector<input_view> views = open_views(config, loop_length, fps);
 
-		if (color1_reader.is_bad() || color2_reader.is_bad())
-		{
-			throw std::runtime_error("Cannot read YUV file(s).");
-		}
-
-		std::unique_ptr<GLubyte> rgb1_buffer = std::unique_ptr<GLubyte>(new GLubyte[config.width * config.height * 3]);
-		std::unique_ptr<GLubyte> rgb2_buffer = std::unique_ptr<GLubyte>(new GLubyte[config.width * config.height * 3]);
-
-		GLFWwindow* window = glfwCreateWindow(config.output_width, config.output_height, "View-plus-depth OpenGL rendering demo", glfwGetPrimaryMonitor(), NULL);
+		GLFWwindow* window = glfwCreateWindow(config.output_width, config.output_height, "View-plus-depth OpenGL rendering demo", NULL, NULL); // windowed
 
 		// Open a window and create its OpenGL context		
 		if (!window)
@@ -91,8 +95,7 @@ int main(int argc, char* argv[])
 		glfwMakeContextCurrent(window);
 
 		int screen_width, screen_height;
-		glfwGetWindowSize(window, &screen_width, &screen_height);
-		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+		glfwGetFramebufferSize(window, &screen_width, &screen_height); // pixels, may exceed the window size on HiDPI displays
 		glfwSwapInterval(-1);
 
 		//const float range_multiplier = 1.3f;
@@ -211,6 +214,8 @@ int main(int argc, char* argv[])
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 
 
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // input rows are tightly packed BGR24
+
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, texture1ID);
 		glUniform1i(tex1ID, 0);
@@ -234,13 +239,19 @@ int main(int argc, char* argv[])
 				
 		/////////////////////////////////////////////////////////////////////////
 
-		bool first_loop = true;
-		glfwSetCursorPos(window, screen_width / 2.0, screen_height / 2.0);
-		//unsigned ft_triangles = 0;
-		unsigned frame = 0;
 		float curr_fps = 0;
 		double lastTime = glfwGetTime();
 		unsigned nbFrames = 0;
+
+		// video clock: input frames advance at `fps`, independently of the rendering rate
+		const double frame_period = 1.0 / fps;
+		double next_frame_time = glfwGetTime() + frame_period;
+		long video_frame = 0;
+
+		// which views are bound to Texture1/Texture2, and which of their frames was uploaded last
+		std::pair<int, int> pair(-1, -1);
+		unsigned long uploaded_serial[2] = {0, 0};
+		int uploaded_view[2] = {-1, -1};
 
 		
 		//glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -256,21 +267,26 @@ int main(int argc, char* argv[])
 			if (currentTime - lastTime >= 1.0)// If last prinf() was more than 1sec ago
 			{
 				curr_fps = nbFrames / (currentTime - lastTime);
-				printf("%d: %3.1f FPS \t", frame, curr_fps);
+				printf("frame %ld (views %s + %s): %3.1f FPS\n", video_frame, views[pair.first].camera.name.c_str(),
+				       views[pair.second].camera.name.c_str(), curr_fps);
 				nbFrames = 0;
 				lastTime = currentTime;
 			}
 
-			if (frame >= config.frames)
+			if (loop_length > 1 && currentTime >= next_frame_time)
 			{
-				color1_reader.set_frame(0);
-				color2_reader.set_frame(0);
-				frame = 0;
-				first_loop = false;
+				for (input_view &v : views)
+				{
+					v.source->advance();
+				}
+				video_frame = (video_frame + 1) % loop_length;
+				next_frame_time += frame_period;
+				if (currentTime > next_frame_time)
+				{
+					next_frame_time = currentTime + frame_period; // decoding can't keep up: slow down instead of skipping
+				}
 			}
 
-			frame++;
-			//printf("frame: %d\n", frame);
 			glBindFramebuffer(GL_FRAMEBUFFER, FramebufferName);
 			glViewport(0, 0, screen_width, screen_height); // Render on the whole framebuffer, complete from the lower left corner to the upper right
 			//glViewport(0, 0, config.width, config.height);
@@ -279,25 +295,37 @@ int main(int argc, char* argv[])
 			// Use our shader
 			glUseProgram(internal_programID);
 
-			read_rgb_frame(color1_reader, config, rgb1_buffer.get());
-			read_rgb_frame(color2_reader, config, rgb2_buffer.get());
-
-			glActiveTexture(GL_TEXTURE0);
-			glBindTexture(GL_TEXTURE_2D, texture1ID);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, config.width, config.height, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb1_buffer.get());
-			glGenerateMipmap(GL_TEXTURE_2D);  //Generate mipmaps here.
-
-			glActiveTexture(GL_TEXTURE1);
-			glBindTexture(GL_TEXTURE_2D, texture2ID);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, config.width, config.height, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb2_buffer.get());
-			glGenerateMipmap(GL_TEXTURE_2D);  //Generate mipmaps here.
-
-
 			const mat4 ViewMatrix = computeViewMatrix(config.speed, config.mouseSpeed, window);
 			//const mat4 Cinv = glm::inverse(ViewMatrix*CV);
 			const mat4 Cinv = ViewMatrix*glm::inverse(CV);
-			const mat4 MVP1 = C1 * Cinv;
-			const mat4 MVP2 = C2 * Cinv;
+
+			// pick the pair of input views that best brackets the (moved) virtual camera
+			const vec3 virtual_center = vec3(Cinv * vec4(0, 0, 0, 1));
+			const vec3 virtual_direction = glm::normalize(mat3(ViewMatrix) * output_camera.forward());
+			const std::pair<int, int> new_pair = select_views(views, virtual_center, virtual_direction, config.max_view_angle, pair);
+			if (new_pair != pair)
+			{
+				pair = new_pair;
+				printf("Using views %s + %s\n", views[pair.first].camera.name.c_str(), views[pair.second].camera.name.c_str());
+			}
+
+			// upload input frames only when the bound view or its frame changed
+			const int bound[2] = {pair.first, pair.second};
+			const GLuint textures[2] = {texture1ID, texture2ID};
+			for (int i = 0; i < 2; i++)
+			{
+				const vi::buffered_source &src = *views[bound[i]].source;
+				if (uploaded_view[i] == bound[i] && uploaded_serial[i] == src.serial()) continue;
+				glActiveTexture(GL_TEXTURE0 + i);
+				glBindTexture(GL_TEXTURE_2D, textures[i]);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, config.width, config.height, GL_RGB, GL_UNSIGNED_BYTE, src.current());
+				glGenerateMipmap(GL_TEXTURE_2D);
+				uploaded_view[i] = bound[i];
+				uploaded_serial[i] = src.serial();
+			}
+
+			const mat4 MVP1 = views[pair.first].projection * Cinv;
+			const mat4 MVP2 = views[pair.second].projection * Cinv;
 
 			// Send our transformation to the currently bound shader, in the "MVP" uniform
 			glUniformMatrix4fv(Matrix1ID, 1, GL_FALSE, &MVP1[0][0]);
@@ -475,24 +503,106 @@ void setup_program(const GLuint programID, config::vi_config config, const int s
 }
 
 
-void read_rgb_frame(t3dtv::yuv_reader &color_reader, config::vi_config config, GLubyte *const rgb_buffer)
+std::vector<input_view> open_views(const config::vi_config &config, long &loop_length, double &fps)
 {
-	color_reader.read_frame();
+	const int w = int(config.width), h = int(config.height);
 
-	const GLubyte * const frame = color_reader.frame->frame;
-	const long HW = long(config.width) * config.height;
-
-#pragma omp parallel for
-	for (int yi = 0; yi < int(config.height); yi++)
+	// open all decoders first, to agree on a common loop length (keeps videos frame-synchronous)
+	std::vector<std::unique_ptr<vi::frame_decoder>> decoders;
+	loop_length = 0;
+	fps = config.fps;
+	for (const config::vi_config::view &v : config.views)
 	{
-		long index = yi * long(config.width);
-
-		for (int xi = 0; xi < int(config.width); xi++, index++)
+		decoders.push_back(vi::open_decoder(v.file, w, h));
+		const long count = decoders.back()->frame_count();
+		printf("Input %s: camera %s, %ld frame(s), %.2f fps\n", v.file.c_str(), v.camera.c_str(), count, decoders.back()->fps());
+		if (count > 1)
 		{
-			rgb_buffer[index * 3] = frame[index];
-			rgb_buffer[index * 3 + 1] = frame[index + HW];
-			rgb_buffer[index * 3 + 2] = frame[index + HW * 2];
+			loop_length = (loop_length == 0) ? count : std::min(loop_length, count);
+		}
+		if (fps <= 0 && decoders.back()->fps() > 0)
+		{
+			fps = decoders.back()->fps();
+		}
+	}
+	if (config.frames > 0 && (loop_length == 0 || long(config.frames) < loop_length))
+	{
+		loop_length = config.frames;
+	}
+	if (fps <= 0)
+	{
+		fps = 25;
+	}
+	printf("Playing %ld frame(s) in a loop at %.2f fps\n", loop_length, fps);
+
+	std::vector<input_view> views;
+	for (size_t i = 0; i < config.views.size(); i++)
+	{
+		input_view view;
+		view.camera = config::camera_loader::read_settings(config.camera_file, config.views[i].camera).scaled_to(w, h);
+		view.projection = view.camera.projection();
+		std::unique_ptr<vi::undistort_map> undistort;
+		if (view.camera.has_distortion())
+		{
+			undistort = std::make_unique<vi::undistort_map>(view.camera, w, h);
+		}
+		view.source = std::make_unique<vi::buffered_source>(std::move(decoders[i]), w, h, std::move(undistort),
+		                                                     loop_length, config.buffer_frames);
+		views.push_back(std::move(view));
+	}
+	return views;
+}
+
+//! Chooses the two input views to interpolate from: the pair whose connecting segment passes closest
+//! to the virtual camera centre (plus a small penalty for wide baselines), among views looking
+//! roughly in the same direction as the virtual camera. Keeps the previous pair unless the new one is clearly better.
+std::pair<int, int> select_views(const std::vector<input_view> &views, const vec3 &center, const vec3 &direction,
+                                 const float max_angle_deg, const std::pair<int, int> previous)
+{
+	const int n = int(views.size());
+	if (n == 2)
+	{
+		return {0, 1};
+	}
+
+	const float min_cos = std::cos(glm::radians(max_angle_deg));
+	std::vector<int> candidates;
+	for (int i = 0; i < n; i++)
+	{
+		if (glm::dot(views[i].camera.forward(), direction) >= min_cos) candidates.push_back(i);
+	}
+	if (candidates.size() < 2)
+	{
+		candidates.clear();
+		for (int i = 0; i < n; i++) candidates.push_back(i);
+	}
+
+	auto score = [&](int a, int b) {
+		const vec3 ca = views[a].camera.center(), cb = views[b].camera.center();
+		const vec3 ab = cb - ca;
+		const float s = glm::clamp(glm::dot(center - ca, ab) / glm::dot(ab, ab), 0.f, 1.f);
+		return glm::length(center - (ca + s * ab)) + 0.25f * glm::length(ab);
+	};
+
+	std::pair<int, int> best(candidates[0], candidates[1]);
+	float best_score = std::numeric_limits<float>::max();
+	for (size_t i = 0; i < candidates.size(); i++)
+	{
+		for (size_t j = i + 1; j < candidates.size(); j++)
+		{
+			const float sc = score(candidates[i], candidates[j]);
+			if (sc < best_score)
+			{
+				best_score = sc;
+				best = {candidates[i], candidates[j]};
+			}
 		}
 	}
 
+	// hysteresis against flickering between two similar pairs
+	if (previous.first >= 0 && previous != best && score(previous.first, previous.second) <= best_score * 1.05f)
+	{
+		return previous;
+	}
+	return best;
 }
