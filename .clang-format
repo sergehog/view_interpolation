@@ -1,0 +1,15 @@
+# Google C++ style with a wider column limit; applied to src/ and tools/ (third_party/ is left as is):
+#   clang-format -i src/*.h src/*.cpp tools/*.cpp
+# Naming (not enforced by clang-format): CamelCase types, lowerCamelCase() functions, snake_case variables,
+# trailing underscore for private class members (members_), kConstantNames.
+BasedOnStyle: Google
+ColumnLimit: 120
+# Include order: own header, C++ standard library, other libraries, project headers.
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<[a-z_]+>$'
+    Priority: 2
+  - Regex: '^<.*'
+    Priority: 3
+  - Regex: '.*'
+    Priority: 4

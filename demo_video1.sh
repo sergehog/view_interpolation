@@ -2,7 +2,7 @@
 # Video view-interpolation demo on the CMU Panoptic "171204_pose1_sample" dataset.
 #
 # Usage: ./demo_video1.sh [config] [dataset-dir]
-#   config       default: panoptic_pose1.config (multi-view); or panoptic_pose1_2views.config
+#   config       default: configs/panoptic_pose1.config (multi-view); or configs/panoptic_pose1_2views.config
 #   dataset-dir  folder with calibration_171204_pose1_sample.json and hdVideos/
 #                default: $PANOPTIC_SAMPLE or ~/git/panoptic-toolbox/171204_pose1_sample
 #
@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-CONFIG="${1:-panoptic_pose1.config}"
+CONFIG="${1:-configs/panoptic_pose1.config}"
 DATASET="${2:-${PANOPTIC_SAMPLE:-$HOME/git/panoptic-toolbox/171204_pose1_sample}}"
 
 if [ ! -f "$DATASET/calibration_171204_pose1_sample.json" ] || [ ! -d "$DATASET/hdVideos" ]; then
@@ -23,6 +23,6 @@ mkdir -p data
 ln -sfn "$(realpath "$DATASET")" data/171204_pose1_sample
 
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release > /dev/null
-cmake --build build-release
+cmake --build build-release --target view_interpolation
 
 ./build-release/view_interpolation "$CONFIG"

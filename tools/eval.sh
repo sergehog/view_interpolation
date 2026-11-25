@@ -8,7 +8,7 @@
 #   temple   Middlebury templeSparseRing 07+09 -> 08, 46 deg   (needs $STEREO_DATA/templeSparseRing)
 #   pan2     Panoptic 00_03+00_12 -> 00_22, frame 50           (needs data/171204_pose1_sample, see demo_video1.sh)
 # env: STEREO_DATA (default ~/git/stereo/data), OUT (default eval-out), FRAME (default 50),
-#      DEPTH=1 also renders depth maps (tools/depth_view.fragment) as <test>_depth.png
+#      DEPTH=1 also renders depth maps (tools/select_depth.frag) as <test>_depth.png
 # needs: xvfb-run, python3 with numpy and Pillow
 #
 # Reference results (PSNR, Nov 2025, after the geometry and YUV colour fixes):
@@ -50,7 +50,7 @@ prepare() { # prepare <test>: data + config + ground truth, returns 1 if data is
         echo "$D/templeSR0008.png 0" > "$OUT/$1.gt" ;;
     pan2)
         [ -f "$P/hdVideos/hd_00_22.mp4" ] || return 1
-        cp panoptic_pose1_2views.config "$OUT/$1.config"
+        cp configs/panoptic_pose1_2views.config "$OUT/$1.config"
         [ -f "$OUT/data/pan_gt22_f$FRAME.png" ] || $BUILD/gtframe "$P/calibration_171204_pose1_sample.json" \
             "$P/hdVideos/hd_00_22.mp4" 00_22 "$FRAME" 960 540 "$OUT/data/pan_gt22_f$FRAME.png"
         echo "$OUT/data/pan_gt22_f$FRAME.png 0" > "$OUT/$1.gt" ;;
@@ -69,7 +69,7 @@ for t in ${@:-geo_par geo_rot temple pan2}; do
     read -r gt crop < "$OUT/$t.gt"
     echo "$t: $(python3 $T/psnr.py "$OUT/$t.png" "$gt" "$crop")"
     if [ "${DEPTH:-0}" = 1 ]; then
-        sed "s|<fragment_shader>[^<]*|<fragment_shader>$T/depth_view.fragment|" "$OUT/$t.config" > "$OUT/${t}_depth.config"
+        sed "s|</settings>|<fragment_shader>$T/select_depth.frag</fragment_shader></settings>|" "$OUT/$t.config" > "$OUT/${t}_depth.config"
         snapshot "$OUT/${t}_depth.config" "$OUT/${t}_depth.png" || true
     fi
 done
